@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { addWork, clearLibrary, db, deleteTag, DuplicateError, exportBackup, importBackup, removeWork } from './db'
-import Reader, { saveOrShare } from './Reader'
+import Reader from './Reader'
+import { pdfHeaderEnabled, setPdfHeaderEnabled } from './pdfheader'
 import { checkRoom, copiesSize, fmtSize, loadCopy, removeAllCopies, removeCopy, requestPersistence, STORABLE, storageInfo, storeCopy, StorageError, type StorageInfo } from './storage'
 import { extract, sha256, ImportError } from './extract'
 import { applyFilter, effective } from './filter'
@@ -36,7 +37,7 @@ export default function App() {
       try {
         const hash = await sha256(file)
         if (await db.works.where('hash').equals(hash).count()) { errs.push(`${file.name}: already in your library.`); continue }
-        const { format, meta } = await extract(file)
+        const { format, meta } = await extract(file, { pdfHeader: pdfHeaderEnabled() })
         out.push({ file, hash, format, meta, auto: Object.keys(meta) })
       } catch (e) { errs.push(`${file.name}: ${e instanceof ImportError ? e.message : 'could not be read.'}`) }
       await new Promise(r => setTimeout(r)) // yield so the UI stays responsive
@@ -132,6 +133,7 @@ export default function App() {
       <button className={btn} onClick={async () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([await exportBackup(db)], { type: 'application/json' })); a.download = 'ficshelf-metadata.json'; a.click() }}>Export metadata backup</button>
       <label className={ghost + ' grid place-items-center'}>Restore metadata backup<input hidden type="file" accept=".json" onChange={async e => { const t = await e.target.files?.[0]?.text(); if (!t || !confirm('Restoring replaces your current library records. Continue?')) return; try { await importBackup(db, t); reload() } catch (x: any) { setMsgs([x.message]) } }} /></label>
       <button className={ghost + ' text-red-300'} onClick={async () => { if (confirm('Clear all library records and stored copies in FicShelf? Your original files on the device are not touched.')) { await clearLibrary(db); reload() } }}>Clear library and stored copies</button>
+      <PdfHeaderToggle />
       <StorageCard works={works} onChange={reload} />
       <h2 className="font-serif text-xl mt-4">Privacy</h2>
       <p className="text-dim text-sm">Everything stays on this device. No accounts, analytics, uploads or AI. Story text is never read or analyzed. FicShelf keeps metadata only, so reopening a file means picking it again from your device.</p></section>}
@@ -226,4 +228,12 @@ function StorageCard({ works, onChange }: { works: Work[]; onChange: () => void 
     {note && <p role="status" className="text-sm">{note}</p>}
     {n > 0 && <button className={ghost} onClick={async () => { if (confirm(`Remove all ${n} stored copies? Metadata and your original files stay.`)) { await removeAllCopies(db); onChange(); refresh() } }}>Remove all stored copies</button>}
   </section>
+}
+
+function PdfHeaderToggle() {
+  const [on, setOn] = useState(pdfHeaderEnabled())
+  return <section className="grid gap-1"><h2 className="font-serif text-xl mt-4">PDF import</h2>
+    <label className="flex items-start gap-2 min-h-10"><input type="checkbox" className="mt-1" checked={on} onChange={e => { setOn(e.target.checked); setPdfHeaderEnabled(e.target.checked) }} />
+      <span>Read the labelled header on a PDF's first page (Fandom, Rating, Stats and similar lines)</span></label>
+    <p className="text-dim text-sm">Done on your device with no AI. Only the header lines are kept and the page text is discarded. Nothing after the Stats line and no other page is read. You can always correct the result before saving.</p></section>
 }

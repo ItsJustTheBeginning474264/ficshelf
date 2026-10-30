@@ -9,7 +9,7 @@ A privacy-first personal fanfiction library for Android phones. Import files you
 | No AI on story content | No LLM APIs, embeddings or semantic search. Story prose is never read, indexed or summarised. |
 | No uploads or tracking | No network calls with your data, no analytics, no accounts, no cloud sync. |
 | Originals untouched | Files are never modified. A stored copy is the exact same bytes. |
-| Metadata only | Only existing file metadata or an explicit labelled header is read. Missing fields stay empty and you fill them in. |
+| Metadata only | Only existing file metadata or an explicit labelled header is read (for PDFs, page 1 only, and only if the Settings toggle is on). Missing fields stay empty and you fill them in. |
 
 ## Features
 
@@ -17,6 +17,7 @@ A privacy-first personal fanfiction library for Android phones. Import files you
 |---|---|
 | Import | EPUB, PDF, HTML, TXT. Multiple files at once, hash-based duplicate detection, review and correct before saving, auto vs manual fields shown. |
 | Metadata | EPUB OPF fields, PDF document info, HTML meta tags, AO3-style labelled headers, TXT `---` header. Originals are kept separate from your edits. |
+| PDF header (optional) | For PDFs, FicShelf can also read the labelled header on page 1 only (Rating, Fandom, Relationship, Character, Additional Tags, Language, Stats, source URL). Local, no AI, on by default, switchable in Settings. Page text is discarded and nothing after the Stats line or on other pages is read. |
 | Filters | Fandom, relationship, original tags (required or excluded), personal tags, word range, completion, reading status, rating, format. |
 | Filter logic | Choices in one group match any; different groups must all match; required tags must all be present; excluded tags hide a fic if any is present. |
 | Saved filters | Name and save a combination; it persists after closing the app. |
@@ -88,10 +89,11 @@ Tables: `works`, `tags`, `filters`, `files` (schema v2). To change the schema, a
 
 ## Tests
 
-33 tests cover filtering (combined, excluded, ranges, status), extraction for every format, corrupt and password-protected files, "no prose is read" checks, hash determinism, duplicate detection, tag deletion, backup and restore, and local-copy storage (quota, missing, corrupted, removal). Fixtures are generated in memory with fictional data. No real fanfiction is used.
+37 tests cover filtering (combined, excluded, ranges, status), extraction for every format, corrupt and password-protected files, "no prose is read" checks, hash determinism, duplicate detection, tag deletion, backup and restore, and local-copy storage (quota, missing, corrupted, removal). Fixtures are generated in memory with fictional data. No real fanfiction is used.
 
 ## Known limitations
 
+- PDF header reading is only tested on synthetic PDFs. Real AO3 PDFs may lay out text differently, so some fields can come back empty. Scanned PDFs have no text to read.
 - HTML and TXT files cannot be stored as local copies yet.
 - Android Chrome has no inline PDF viewer, so PDFs open in another app.
 - The reader is basic (no table of contents, font controls or search).

@@ -1,6 +1,7 @@
 import JSZip from 'jszip'
 import { PDFDocument } from 'pdf-lib'
 import type { Format, Meta } from './types'
+import { firstPageText, parsePageOne } from './pdfheader'
 
 export class ImportError extends Error {}
 export const detectFormat = (f: File): Format | null => {
@@ -83,9 +84,15 @@ export async function extractTxt(f: File): Promise<Meta> {
   const t = mt && mt[1].match(/^title:\s*(.+)$/im)?.[1], a = mt && mt[1].match(/^author:\s*(.+)$/im)?.[1]
   return clean({ ...m, title: t || undefined, author: a || undefined })
 }
-export async function extract(f: File): Promise<{ format: Format; meta: Meta }> {
+export async function extract(f: File, opts: { pdfHeader?: boolean } = {}): Promise<{ format: Format; meta: Meta }> {
   const format = detectFormat(f)
   if (!format) throw new ImportError(`Unsupported file type: ${f.name}`)
-  const meta = format === 'epub' ? await extractEpub(f) : format === 'pdf' ? await extractPdf(f) : format === 'html' ? await extractHtml(f) : await extractTxt(f)
+  const meta = format === 'epub' ? await extractEpub(f) : format === 'pdf' ? await extractPdfWithHeader(f, opts.pdfHeader) : format === 'html' ? await extractHtml(f) : await extractTxt(f)
   return { format, meta }
+}
+/** Document info always; the labelled first-page header only when enabled. Document info wins on conflicts. A header that cannot be read is skipped. */
+export async function extractPdfWithHeader(f: File, header = false): Promise<Meta> {
+  const info = await extractPdf(f)
+  if (!header) return info
+  try { return clean({ ...parsePageOne(await firstPageText(f)), ...info }) } catch { return info }
 }

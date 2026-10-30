@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import 'fake-indexeddb/auto'
-import { corrupt, FULL_OPF, HEADER, makeEncryptedPdf, makeEpub, makeHtml, makePdf, makeTxt, PROSE } from './fixtures'
-import { detectFormat, extract, extractEpub, extractHtml, extractPdf, extractTxt, ImportError, sha256 } from './extract'
+import { makeHeaderPdf, corrupt, FULL_OPF, HEADER, makeEncryptedPdf, makeEpub, makeHtml, makePdf, makeTxt, PROSE } from './fixtures'
+import { extractPdfWithHeader, detectFormat, extract, extractEpub, extractHtml, extractPdf, extractTxt, ImportError, sha256 } from './extract'
+import { parsePageOne } from './pdfheader'
 import { addWork, DuplicateError, FicDB } from './db'
 import type { Work } from './types'
 
@@ -75,5 +76,26 @@ describe('hashing and duplicates', () => {
     const d = new FicDB('dup'); const hash = await sha256(new File(['x'], 'x.txt'))
     const w: Omit<Work, 'id'> = { original: {}, edits: {}, fields: {}, format: 'txt', size: 1, hash, fileName: 'x.txt', addedAt: 1, personalTagIds: [], status: 'Unread', favourite: false, notes: '', hasLocalCopy: false }
     await addWork(d, w); await expect(addWork(d, { ...w, fileName: 'renamed.txt' })).rejects.toThrow(DuplicateError); expect(await d.works.count()).toBe(1)
+  })
+})
+describe('PDF first-page header (opt-in)', () => {
+  it('reads the labelled header from page 1 only, and nothing from prose or page 2', async () => {
+    const m = await extractPdfWithHeader(await makeHeaderPdf({ title: 'Doc Title', author: 'Doc Author' }), true)
+    expect(m).toMatchObject({ title: 'Doc Title', author: 'Doc Author', rating: 'Teen And Up Audiences', fandoms: ['Imaginary Saga', 'Other Saga'], relationships: ['Ada/Bo'],
+      characters: ['Ada', 'Bo'], tags: ['Hurt/Comfort', 'Slow Burn'], warnings: ['No Archive Warnings Apply'], language: 'English', words: 12345, chapters: 3, complete: true,
+      published: '2020-01-02', sourceUrl: 'https://archiveofourown.org/works/123456' })
+    expect(JSON.stringify(m)).not.toMatch(/ZZPROSE|Trap|999999|777777|Explicit/)
+  })
+  it('is off by default: document info only', async () => {
+    const m = await extract(await makeHeaderPdf({ title: 'T' })); expect(m.meta).toEqual({ title: 'T' })
+  })
+  it('falls back to document info when the PDF has no readable header', async () => {
+    expect(await extractPdfWithHeader(await makePdf({ title: 'Plain' }), true)).toEqual({ title: 'Plain' })
+  })
+  it('parser ignores values that are not closed by another label and anything after Stats', () => {
+    expect(parsePageOne('Rating: General Audiences once upon a time')).toEqual({})
+    const m = parsePageOne('Fandom: A Rating: Mature Stats: Words: 10 Chapters: 1/? Fandom: Late Words: 5')
+    expect(m).toEqual({ fandoms: ['A'], rating: 'Mature', words: 10, chapters: 1, complete: false })
+    expect(parsePageOne('no labels here')).toEqual({})
   })
 })

@@ -29,3 +29,14 @@ export const makeEncryptedPdf = () => file(['%PDF-1.4\n1 0 obj<</Type/Catalog/Pa
 export const makeHtml = (head: string, body = '') => file([`<!doctype html><html lang="en"><head>${head}</head><body>${body}<p>${PROSE}. Fandom: Prose Trap. Words: 999999</p></body></html>`], 'test.html')
 export const makeTxt = (text: string) => file([text], 'test.txt')
 export const corrupt = (name: string) => file([new Uint8Array([1, 2, 3, 4, 5, 250, 251])], name)
+/** Page 1 carries an AO3-style labelled header, then prose that contains decoy labels. Page 2 also has decoys. */
+export async function makeHeaderPdf(o: { title?: string; author?: string } = {}) {
+  const d = await PDFDocument.create(); const font = await d.embedFont(StandardFonts.Helvetica)
+  const lines = ['Posted originally on the Archive of Our Own at https://archiveofourown.org/works/123456.', 'Rating: Teen And Up Audiences', 'Archive Warning: No Archive Warnings Apply', 'Fandom: Imaginary Saga, Other Saga',
+    'Relationship: Ada/Bo', 'Character: Ada, Bo', 'Additional Tags: Hurt/Comfort, Slow Burn', 'Language: English', 'Stats: Published: 2020-01-02 Completed: 2020-03-04 Words: 12,345 Chapters: 3/3',
+    PROSE + '. Fandom: Prose Trap Words: 999999 Rating: Explicit']
+  const p = d.addPage(); lines.forEach((l, i) => p.drawText(l, { x: 20, y: 780 - i * 16, size: 8, font }))
+  d.addPage().drawText('Fandom: Page Two Trap Words: 777777', { x: 20, y: 780, size: 8, font })
+  if (o.title) d.setTitle(o.title); if (o.author) d.setAuthor(o.author)
+  return new File([await d.save() as any], 'header.pdf')
+}

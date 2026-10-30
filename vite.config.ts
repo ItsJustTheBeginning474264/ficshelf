@@ -7,6 +7,6 @@ export default defineConfig({
     manifest: { name: 'FicShelf', short_name: 'FicShelf', display: 'standalone',
       background_color: '#17141c', theme_color: '#17141c', start_url: '.',
       icons: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }] },
-    workbox: { globPatterns: ['**/*.{js,css,html,svg}'] } })],
+    workbox: { globPatterns: ['**/*.{js,mjs,css,html,svg}'] } })],
   test: { environment: 'node' }
 })
