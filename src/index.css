@@ -1,0 +1,3 @@
+@tailwind base;@tailwind components;@tailwind utilities;
+body{background:#17141c;color:#ebe6f0;font-family:system-ui,sans-serif;padding-top:env(safe-area-inset-top)}
+:focus-visible{outline:2px solid #d08fb0;outline-offset:2px}
