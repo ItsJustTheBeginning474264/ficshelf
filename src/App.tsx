@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { addWork, clearLibrary, db, deleteTag, DuplicateError, exportBackup, importBackup, removeWork } from './db'
 import Reader from './Reader'
 import { pdfHeaderEnabled, setPdfHeaderEnabled } from './pdfheader'
+import { autoStoreEnabled, setAutoStoreEnabled } from './storage'
 import { checkRoom, copiesSize, fmtSize, loadCopy, removeAllCopies, removeCopy, requestPersistence, STORABLE, storageInfo, storeCopy, StorageError, type StorageInfo } from './storage'
 import { extract, sha256, ImportError } from './extract'
-import { applyFilter, effective } from './filter'
+import { applyFilter, effective, norm } from './filter'
 import { emptyFilter, STATUSES, type Filter, type Meta, type PTag, type SavedFilter, type Work } from './types'
 
 type Tab = 'home' | 'library' | 'collections' | 'favourites' | 'settings'
-type Draft = { file: File; hash: string; format: Work['format']; meta: Meta; auto: string[] }
 const initials = (t = '?') => t.split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase()).join('')
 const hue = (s: string) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)
 const inp = 'w-full rounded-xl bg-ink border border-line px-3 py-3 text-base'
@@ -19,7 +19,7 @@ export default function App() {
   const [works, setWorks] = useState<Work[]>([]); const [tags, setTags] = useState<PTag[]>([]); const [saved, setSaved] = useState<SavedFilter[]>([])
   const [tab, setTab] = useState<Tab>('home'); const [f, setF] = useState<Filter>(emptyFilter()); const [showF, setShowF] = useState(false)
   const [sel, setSel] = useState<Set<number>>(new Set()); const [open, setOpen] = useState<Work | null>(null)
-  const [drafts, setDrafts] = useState<Draft[]>([]); const [msgs, setMsgs] = useState<string[]>([]); const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState<Work | null>(null); const [msgs, setMsgs] = useState<string[]>([]); const [busy, setBusy] = useState(false)
   const [reading, setReading] = useState<{ work: Work; blob: Blob } | null>(null)
   const [sort, setSort] = useState<'added' | 'title' | 'words'>('added')
   const reload = async () => { setWorks(await db.works.toArray()); setTags(await db.tags.toArray()); setSaved(await db.filters.toArray()) }
@@ -29,34 +29,30 @@ export default function App() {
   const shown = useMemo(() => applyFilter(works, base, tagName).sort((a, b) =>
     sort === 'title' ? (effective(a).title ?? a.fileName).localeCompare(effective(b).title ?? b.fileName)
     : sort === 'words' ? (effective(b).words ?? -1) - (effective(a).words ?? -1) : b.addedAt - a.addedAt), [works, f, tab, sort, tags])
-  const all = (k: 'fandoms' | 'characters' | 'relationships' | 'tags') => [...new Set(works.flatMap(w => effective(w)[k] ?? []))].sort()
 
   async function pick(files: FileList | null) {
-    if (!files) return; setBusy(true); const out: Draft[] = []; const errs: string[] = []
-    for (const file of Array.from(files)) {
+    if (!files?.length) return; const list = Array.from(files)       // copy before the input is reset
+    setBusy(true); const notes: string[] = []; let added = 0; const store = autoStoreEnabled(), header = pdfHeaderEnabled()
+    for (const file of list) {
       try {
         const hash = await sha256(file)
-        if (await db.works.where('hash').equals(hash).count()) { errs.push(`${file.name}: already in your library.`); continue }
-        const { format, meta } = await extract(file, { pdfHeader: pdfHeaderEnabled() })
-        out.push({ file, hash, format, meta, auto: Object.keys(meta) })
-      } catch (e) { errs.push(`${file.name}: ${e instanceof ImportError ? e.message : 'could not be read.'}`) }
-      await new Promise(r => setTimeout(r)) // yield so the UI stays responsive
+        if (await db.works.where('hash').equals(hash).count()) { notes.push(`${file.name}: already in your library.`); continue }
+        const { format, meta } = await extract(file, { pdfHeader: header })
+        const id = await addWork(db, { original: meta, edits: {}, fields: Object.fromEntries(Object.keys(meta).map(k => [k, 'auto' as const])), format, size: file.size, hash, fileName: file.name,
+          addedAt: Date.now(), personalTagIds: [], status: 'Unread', favourite: false, notes: '', hasLocalCopy: false })
+        added++
+        if (store && STORABLE.includes(format)) {
+          try { await storeCopy(db, (await db.works.get(id))!, file) }
+          catch (e) { notes.push(`${file.name}: added as metadata only. ${e instanceof StorageError ? e.message : 'Storing the file failed.'}`) }
+        }
+      } catch (e) { notes.push(`${file.name}: ${e instanceof DuplicateError ? 'already in your library.' : e instanceof ImportError ? e.message : 'could not be read.'}`) }
+      await new Promise(r => setTimeout(r))   // keep the UI responsive between files
     }
-    setDrafts(out); setMsgs(errs); setBusy(false)
+    setMsgs([`Imported ${added} of ${list.length} file${list.length === 1 ? '' : 's'}. Open a fic to edit its details.`, ...notes]); setBusy(false); reload()
   }
-  async function saveDraft(d: Draft, m: Meta, manual: string[], store: boolean) {
-    const fields: Work['fields'] = {}; d.auto.forEach(k => fields[k] = 'auto'); manual.forEach(k => fields[k] = 'manual')
-    const note: string[] = []
-    try {
-      const id = await addWork(db, { original: d.meta, edits: diff(d.meta, m), fields, format: d.format, size: d.file.size, hash: d.hash, fileName: d.file.name,
-        addedAt: Date.now(), personalTagIds: [], status: 'Unread', favourite: false, notes: '', hasLocalCopy: false })
-      if (store) {
-        try { await storeCopy(db, (await db.works.get(id))!, d.file) }
-        catch (e) { note.push(`${d.file.name} was added as metadata only. ${e instanceof StorageError ? e.message : 'Storing the file failed.'}`) }
-      }
-    } catch (e) { note.push(e instanceof DuplicateError ? `${d.file.name}: already in your library.` : `${d.file.name}: could not be saved.`) }
-    if (note.length) setMsgs(x => [...x, ...note])
-    setDrafts(x => x.filter(y => y !== d)); reload()
+  const saveEdits = async (w: Work, m: Meta) => {
+    const edits = diff(w.original, m); const fields = { ...w.fields }; Object.keys(edits).forEach(k => { fields[k] = 'manual' })
+    await update(w, { edits, fields }); setEditing(null)
   }
   async function openFic(w: Work) {
     try {
@@ -91,19 +87,21 @@ export default function App() {
       </div></button> }
   const List = ({ ws }: { ws: Work[] }) => ws.length ? <div className="grid gap-3">{ws.slice(0, 200).map(w => <Card key={w.id} w={w} />)}{ws.length > 200 && <p className="text-dim text-sm">Showing 200 of {ws.length}. Narrow with filters.</p>}</div>
     : <p className="text-dim py-8">Nothing here yet. Tap Import to add EPUB, PDF, HTML or TXT files from your phone.</p>
+  const lc = (pre: string, vals: string[], set: (v: string[]) => void): [string, () => void][] => vals.map(x => [pre + x, () => set(vals.filter(y => y !== x))])
+  const ex = f.exclude, setEx = (p: Partial<Filter['exclude']>) => setF({ ...f, exclude: { ...ex, ...p } })
   const chips: [string, () => void][] = [
-    ...f.fandoms.map(x => [x, () => setF({ ...f, fandoms: f.fandoms.filter(y => y !== x) })] as [string, () => void]),
-    ...f.statuses.map(x => [x, () => setF({ ...f, statuses: f.statuses.filter(y => y !== x) })] as [string, () => void]),
-    ...f.tags.map(x => ['+' + x, () => setF({ ...f, tags: f.tags.filter(y => y !== x) })] as [string, () => void]),
-    ...f.exclude.tags.map(x => ['−' + x, () => setF({ ...f, exclude: { ...f.exclude, tags: f.exclude.tags.filter(y => y !== x) } })] as [string, () => void]),
-    ...f.personalTagIds.map(x => ['♥ ' + tagName(x), () => setF({ ...f, personalTagIds: f.personalTagIds.filter(y => y !== x) })] as [string, () => void])]
+    ...lc('', f.fandoms, v => setF({ ...f, fandoms: v })), ...lc('', f.authors, v => setF({ ...f, authors: v })), ...lc('', f.relationships, v => setF({ ...f, relationships: v })), ...lc('', f.characters, v => setF({ ...f, characters: v })),
+    ...lc('+', f.tags, v => setF({ ...f, tags: v })), ...lc('', f.statuses, v => setF({ ...f, statuses: v as any })),
+    ...f.personalTagIds.map(x => ['♥ ' + tagName(x), () => setF({ ...f, personalTagIds: f.personalTagIds.filter(y => y !== x) })] as [string, () => void]),
+    ...lc('−', ex.tags, v => setEx({ tags: v })), ...lc('−', ex.characters, v => setEx({ characters: v })), ...lc('−', ex.relationships, v => setEx({ relationships: v })),
+    ...ex.personalTagIds.map(x => ['−♥ ' + tagName(x), () => setEx({ personalTagIds: ex.personalTagIds.filter(y => y !== x) })] as [string, () => void])]
 
   return <div className="min-h-screen max-w-2xl mx-auto pb-28 px-4 pt-4">
     <header className="flex items-center justify-between mb-4"><h1 className="font-serif text-3xl text-acc">FicShelf</h1>
       <label className={btn + ' grid place-items-center cursor-pointer'}>Import<input type="file" multiple hidden accept=".epub,.pdf,.html,.htm,.txt" onChange={e => { pick(e.target.files); e.target.value = '' }} /></label></header>
     {busy && <p role="status" className="text-dim mb-2">Reading file metadata…</p>}
     {msgs.map((m, i) => <p key={i} role="alert" className="text-sm bg-pane border border-line rounded-xl p-3 mb-2" onClick={() => setMsgs(x => x.filter((_, j) => j !== i))}>{m}</p>)}
-    {drafts[0] && <DraftForm key={drafts[0].hash} d={drafts[0]} onSave={saveDraft} onSkip={() => setDrafts(x => x.slice(1))} />}
+    {editing && <MetaForm key={editing.id} w={editing} onSave={m => saveEdits(editing, m)} onCancel={() => setEditing(null)} />}
 
     {(tab === 'home' || tab === 'library' || tab === 'favourites') && <>
       <input aria-label="Search library metadata" className={inp + ' mb-3'} placeholder="Search title, author, fandom, pairing, tags" value={f.q} onChange={e => setF({ ...f, q: e.target.value })} />
@@ -116,7 +114,7 @@ export default function App() {
         <div className="flex gap-2 mb-2"><button className={ghost} onClick={() => setShowF(!showF)}>Filters</button>
           <select aria-label="Sort" className={inp + ' !w-auto'} value={sort} onChange={e => setSort(e.target.value as any)}><option value="added">Newest</option><option value="title">Title</option><option value="words">Longest</option></select>
           <button className={ghost} onClick={() => random(shown)}>Random</button></div>
-        {showF && <FilterPanel f={f} setF={setF} fandoms={all('fandoms')} chars={all('characters')} rels={all('relationships')} otags={all('tags')} ptags={tags} />}
+        {showF && <FilterPanel f={f} setF={setF} works={works} ptags={tags} />}
         <div className="flex flex-wrap gap-2 my-2">{chips.map(([l, rm]) => <button key={l} onClick={rm} className="px-3 min-h-9 rounded-full bg-line text-sm">{l} ✕</button>)}</div>
         <div className="flex items-center justify-between text-dim text-sm mb-2"><span>{shown.length} results</span>
           {JSON.stringify(f) !== JSON.stringify(emptyFilter()) && <><button className="underline min-h-9" onClick={() => { const n = prompt('Name this filter'); if (n) db.filters.add({ name: n, filter: f }).then(reload) }}>Save filter</button><button className="underline min-h-9" onClick={() => setF(emptyFilter())}>Clear all</button></>}</div>
@@ -138,7 +136,7 @@ export default function App() {
       <h2 className="font-serif text-xl mt-4">Privacy</h2>
       <p className="text-dim text-sm">Everything stays on this device. No accounts, analytics, uploads or AI. Story text is never read or analyzed. FicShelf keeps metadata only, so reopening a file means picking it again from your device.</p></section>}
 
-    {open && <Detail w={open} tags={tags} onClose={() => setOpen(null)} update={update} onRemove={async () => { if (confirm('Remove from library? This also removes any copy stored in FicShelf. The original file on your device is not touched.')) { await removeWork(db, open.id!); setOpen(null); reload() } }} onOpenFic={() => openFic(open)} onAddCopy={f => addCopy(open, f)} onDropCopy={() => dropCopy(open)} />}
+    {open && <Detail w={open} tags={tags} onClose={() => setOpen(null)} update={update} onRemove={async () => { if (confirm('Remove from library? This also removes any copy stored in FicShelf. The original file on your device is not touched.')) { await removeWork(db, open.id!); setOpen(null); reload() } }} onOpenFic={() => openFic(open)} onEdit={() => setEditing(open)} onAddCopy={f => addCopy(open, f)} onDropCopy={() => dropCopy(open)} />}
     {reading && <Reader work={reading.work} blob={reading.blob} title={effective(reading.work).title ?? reading.work.fileName} onClose={() => setReading(null)} onProgress={c => db.works.update(reading.work.id!, { resumeCfi: c })} />}
     <nav className="fixed bottom-0 inset-x-0 bg-pane border-t border-line grid grid-cols-5 pb-[env(safe-area-inset-bottom)]">
       {(['home', 'library', 'collections', 'favourites', 'settings'] as Tab[]).map(t => <button key={t} aria-current={tab === t} onClick={() => setTab(t)} className={`min-h-14 capitalize text-sm ${tab === t ? 'text-acc' : 'text-dim'}`}>{t}</button>)}</nav>
@@ -146,35 +144,57 @@ export default function App() {
 }
 function diff(a: Meta, b: Meta): Meta { const o: any = {}; for (const k of Object.keys(b)) if (JSON.stringify((a as any)[k]) !== JSON.stringify((b as any)[k])) o[k] = (b as any)[k]; return o }
 const csv = (s: string) => s.split(',').map(x => x.trim()).filter(Boolean)
-function DraftForm({ d, onSave, onSkip }: { d: Draft; onSave: (d: Draft, m: Meta, manual: string[], store: boolean) => void; onSkip: () => void }) {
-  const [m, setM] = useState<Meta>({ ...d.meta, title: d.meta.title ?? d.file.name.replace(/\.\w+$/, '') })
-  const [store, setStore] = useState(false); const [room, setRoom] = useState<string | null>(null); const [info, setInfo] = useState<StorageInfo | null>(null)
-  const canStore = STORABLE.includes(d.format)
-  useEffect(() => { storageInfo().then(i => { setInfo(i); try { checkRoom(i, d.file.size) } catch (e: any) { setRoom(e.message) } }) }, [])
-  const L = (label: string, k: keyof Meta, list = false, number = false) => <label className="block text-sm">{label} <span className="text-dim">{d.auto.includes(k) ? '(from file)' : '(enter manually)'}</span>
+function MetaForm({ w, onSave, onCancel }: { w: Work; onSave: (m: Meta) => void; onCancel: () => void }) {
+  const [m, setM] = useState<Meta>({ ...w.original, ...w.edits })
+  const L = (label: string, k: keyof Meta, list = false, number = false) => <label className="block text-sm">{label} <span className="text-dim">{k in w.edits ? '(edited)' : w.original[k] !== undefined ? '(from file)' : ''}</span>
     <input className={inp} inputMode={number ? 'numeric' : undefined} value={list ? ((m[k] as string[]) ?? []).join(', ') : (m[k] as any) ?? ''}
       onChange={e => setM({ ...m, [k]: number ? (e.target.value ? Number(e.target.value) : undefined) : list ? csv(e.target.value) : e.target.value || undefined })} /></label>
-  return <div role="dialog" aria-label="Review metadata" className="fixed inset-0 z-20 bg-ink/95 overflow-auto p-4"><div className="max-w-2xl mx-auto grid gap-3">
-    <h2 className="font-serif text-2xl">Review {d.file.name}</h2>
+  return <div role="dialog" aria-label="Edit metadata" className="fixed inset-0 z-40 bg-ink overflow-auto p-4"><div className="max-w-2xl mx-auto grid gap-3">
+    <h2 className="font-serif text-2xl">Edit details</h2><p className="text-dim text-sm">Your edits are kept separately. The values read from the file are never overwritten.</p>
     {L('Title', 'title')}{L('Author', 'author')}{L('Fandoms (comma separated)', 'fandoms', true)}{L('Relationships', 'relationships', true)}{L('Characters', 'characters', true)}{L('Rating', 'rating')}{L('Archive warnings', 'warnings', true)}{L('Additional tags', 'tags', true)}{L('Word count', 'words', false, true)}{L('Chapters', 'chapters', false, true)}{L('Source URL', 'sourceUrl')}
-    <fieldset className="rounded-xl border border-line p-3 text-sm"><legend className="px-1">File</legend>
-      <label className="flex items-start gap-2 min-h-10"><input type="checkbox" className="mt-1" disabled={!canStore || !!room} checked={store && canStore} onChange={e => setStore(e.target.checked)} />
-        <span>Store a copy inside FicShelf ({fmtSize(d.file.size)}) so you can open it here</span></label>
-      <p className="text-dim mt-1">{!canStore ? 'Only EPUB and PDF can be stored for now. This file will be added as metadata only.' : room ?? 'Off by default. The file is saved unchanged in this browser and may be cleared if the browser or device clears site data. Keep your original file as the master copy.'}{info && info.quota ? ` Free space: about ${fmtSize(Math.max(0, info.quota - info.usage))} (browser estimate).` : ''}</p></fieldset>
-    <div className="flex gap-2"><button className={btn} onClick={() => onSave(d, m, Object.keys(m).filter(k => !d.auto.includes(k)), store && canStore && !room)}>Save to library</button><button className={ghost} onClick={onSkip}>Skip</button></div></div></div>
+    <label className="block text-sm">Completion<select className={inp} value={m.complete === undefined ? '' : m.complete ? 'y' : 'n'} onChange={e => setM({ ...m, complete: e.target.value === '' ? undefined : e.target.value === 'y' })}><option value="">Unknown</option><option value="y">Complete</option><option value="n">In progress</option></select></label>
+    <div className="flex flex-wrap gap-2"><button className={btn} onClick={() => onSave(m)}>Save</button><button className={ghost} onClick={onCancel}>Cancel</button>
+      <button className={ghost} onClick={() => confirm('Discard your edits and use the values read from the file?') && onSave({ ...w.original })}>Reset to file values</button></div></div></div>
 }
 function Chips({ opts, on, toggle }: { opts: string[]; on: string[]; toggle: (x: string) => void }) {
   return <div className="flex flex-wrap gap-2">{opts.map(o => <button key={o} aria-pressed={on.includes(o)} onClick={() => toggle(o)} className={`px-3 min-h-10 rounded-full text-sm ${on.includes(o) ? 'bg-acc text-ink' : 'bg-line'}`}>{o}</button>)}</div> }
-function FilterPanel({ f, setF, fandoms, chars, rels, otags, ptags }: { f: Filter; setF: (f: Filter) => void; fandoms: string[]; chars: string[]; rels: string[]; otags: string[]; ptags: PTag[] }) {
+/** Typeable dropdown: filters as you type, shows how many fics use each value, multi-select with removable chips. */
+function Combo({ label, options, selected, onChange }: { label: string; options: [string, number][]; selected: string[]; onChange: (v: string[]) => void }) {
+  const [q, setQ] = useState(''); const [focus, setFocus] = useState(false)
+  const nq = norm(q), hits = options.filter(([o]) => !selected.includes(o) && (!nq || norm(o).includes(nq)))
+  return <div><label className="block text-sm font-medium">{label}
+      <input role="combobox" aria-expanded={focus} aria-label={label} className={inp + ' mt-1'} value={q} placeholder={`Type to search ${options.length} option${options.length === 1 ? '' : 's'}`} autoComplete="off"
+        onChange={e => setQ(e.target.value)} onFocus={() => setFocus(true)} onBlur={() => setTimeout(() => setFocus(false), 150)} /></label>
+    {focus && <ul role="listbox" className="max-h-52 overflow-auto rounded-xl border border-line bg-ink mt-1">
+      {hits.slice(0, 40).map(([o, c]) => <li key={o}><button className="w-full text-left px-3 min-h-11" onMouseDown={e => e.preventDefault()} onClick={() => { onChange([...selected, o]); setQ('') }}>{o} <span className="text-dim text-sm">({c})</span></button></li>)}
+      {!hits.length && <li className="px-3 py-3 text-dim text-sm">{options.length ? 'No matches' : 'Nothing to choose from yet'}</li>}
+      {hits.length > 40 && <li className="px-3 py-2 text-dim text-xs">Showing 40 of {hits.length}. Keep typing to narrow.</li>}</ul>}
+    {selected.length > 0 && <div className="flex flex-wrap gap-2 mt-2">{selected.map(x => <button key={x} className="px-3 min-h-9 rounded-full bg-acc text-ink text-sm" onClick={() => onChange(selected.filter(y => y !== x))}>{x} ✕</button>)}</div>}</div>
+}
+function FilterPanel({ f, setF, works, ptags }: { f: Filter; setF: (f: Filter) => void; works: Work[]; ptags: PTag[] }) {
   const tg = (arr: string[], x: string) => arr.includes(x) ? arr.filter(y => y !== x) : [...arr, x]
   const n = (v: string) => v ? Number(v) : undefined
-  return <div className="bg-pane border border-line rounded-2xl p-3 grid gap-3 mb-2">
-    <p className="text-dim text-xs">Choices inside one group match any of them. Different groups must all match. Required tags must all be present. Excluded tags hide a fic if any is present.</p>
-    <b>Fandom</b><Chips opts={fandoms} on={f.fandoms} toggle={x => setF({ ...f, fandoms: tg(f.fandoms, x) })} />
-    <b>Relationship</b><Chips opts={rels} on={f.relationships} toggle={x => setF({ ...f, relationships: tg(f.relationships, x) })} />
-    <b>Require original tags</b><Chips opts={otags} on={f.tags} toggle={x => setF({ ...f, tags: tg(f.tags, x) })} />
-    <b>Exclude original tags</b><Chips opts={otags} on={f.exclude.tags} toggle={x => setF({ ...f, exclude: { ...f.exclude, tags: tg(f.exclude.tags, x) } })} />
-    <b>Personal tags</b><Chips opts={ptags.map(t => t.name)} on={ptags.filter(t => f.personalTagIds.includes(t.id!)).map(t => t.name)} toggle={x => { const id = ptags.find(t => t.name === x)!.id!; setF({ ...f, personalTagIds: f.personalTagIds.includes(id) ? f.personalTagIds.filter(y => y !== id) : [...f.personalTagIds, id] }) }} />
+  const O = useMemo(() => {
+    const tally = (get: (m: Meta) => string[] | string | undefined) => { const c = new Map<string, number>(); for (const w of works) for (const x of ([] as string[]).concat(get(effective(w)) ?? [])) c.set(x, (c.get(x) ?? 0) + 1); return [...c].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])) }
+    return { fandoms: tally(m => m.fandoms), authors: tally(m => m.author), rels: tally(m => m.relationships), chars: tally(m => m.characters), tags: tally(m => m.tags),
+      mine: ptags.map(t => [t.name, works.filter(w => w.personalTagIds.includes(t.id!)).length] as [string, number]).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])) }
+  }, [works, ptags])
+  const ids = (names: string[]) => names.map(x => ptags.find(t => t.name === x)?.id).filter((x): x is number => x !== undefined)
+  const nm = (idl: number[]) => idl.map(i => ptags.find(t => t.id === i)?.name).filter((x): x is string => !!x)
+  const ex = f.exclude, setEx = (p: Partial<Filter['exclude']>) => setF({ ...f, exclude: { ...ex, ...p } })
+  return <div className="bg-pane border border-line rounded-2xl p-3 grid gap-4 mb-2">
+    <p className="text-dim text-xs">Choices inside one box match any of them. Different boxes must all match. Required tags must all be present. Excluded values hide a fic if any is present. Boxes list values already in your library.</p>
+    <Combo label="Fandom" options={O.fandoms} selected={f.fandoms} onChange={v => setF({ ...f, fandoms: v })} />
+    <Combo label="Author" options={O.authors} selected={f.authors} onChange={v => setF({ ...f, authors: v })} />
+    <Combo label="Relationship" options={O.rels} selected={f.relationships} onChange={v => setF({ ...f, relationships: v })} />
+    <Combo label="Character" options={O.chars} selected={f.characters} onChange={v => setF({ ...f, characters: v })} />
+    <Combo label="Require original tags (all)" options={O.tags} selected={f.tags} onChange={v => setF({ ...f, tags: v })} />
+    <Combo label="My tags (all)" options={O.mine} selected={nm(f.personalTagIds)} onChange={v => setF({ ...f, personalTagIds: ids(v) })} />
+    <b>Exclude</b>
+    <Combo label="Exclude original tags" options={O.tags} selected={ex.tags} onChange={v => setEx({ tags: v })} />
+    <Combo label="Exclude characters" options={O.chars} selected={ex.characters} onChange={v => setEx({ characters: v })} />
+    <Combo label="Exclude relationships" options={O.rels} selected={ex.relationships} onChange={v => setEx({ relationships: v })} />
+    <Combo label="Exclude my tags" options={O.mine} selected={nm(ex.personalTagIds)} onChange={v => setEx({ personalTagIds: ids(v) })} />
     <b>Reading status</b><Chips opts={STATUSES} on={f.statuses} toggle={x => setF({ ...f, statuses: tg(f.statuses, x) as any })} />
     <b>Words</b><div className="flex gap-2"><input aria-label="Minimum words" className={inp} inputMode="numeric" placeholder="Min" value={f.minWords ?? ''} onChange={e => setF({ ...f, minWords: n(e.target.value) })} /><input aria-label="Maximum words" className={inp} inputMode="numeric" placeholder="Max" value={f.maxWords ?? ''} onChange={e => setF({ ...f, maxWords: n(e.target.value) })} /></div>
     <b>Completion</b><Chips opts={['Complete', 'In progress']} on={f.complete === undefined ? [] : [f.complete ? 'Complete' : 'In progress']} toggle={x => setF({ ...f, complete: f.complete === (x === 'Complete') ? undefined : x === 'Complete' })} />
@@ -194,7 +214,7 @@ function Collections({ saved, tags, reload, apply, works }: { saved: SavedFilter
       <button className={ghost} onClick={async () => { const n = prompt('Rename tag', t.name)?.trim(); if (n) { await db.tags.update(t.id!, { name: n }); reload() } }}>Rename</button>
       <button className={ghost} onClick={async () => { if (confirm(`Delete "${t.name}"? Fics are kept.`)) { await deleteTag(db, t.id!); reload() } }}>Delete</button></div>)}</section>
 }
-function Detail({ w, tags, onClose, update, onRemove, onOpenFic, onAddCopy, onDropCopy }: { w: Work; tags: PTag[]; onClose: () => void; update: (w: Work, p: Partial<Work>) => void; onRemove: () => void; onOpenFic: () => void; onAddCopy: (f: File | undefined) => void; onDropCopy: () => void }) {
+function Detail({ w, tags, onClose, update, onRemove, onOpenFic, onEdit, onAddCopy, onDropCopy }: { w: Work; tags: PTag[]; onClose: () => void; update: (w: Work, p: Partial<Work>) => void; onRemove: () => void; onOpenFic: () => void; onEdit: () => void; onAddCopy: (f: File | undefined) => void; onDropCopy: () => void }) {
   const m = effective(w)
   return <div role="dialog" aria-label="Fic details" className="fixed inset-0 z-20 bg-ink overflow-auto p-4"><div className="max-w-2xl mx-auto grid gap-3">
     <button className={ghost + ' justify-self-start'} onClick={onClose}>Back</button>
@@ -211,6 +231,7 @@ function Detail({ w, tags, onClose, update, onRemove, onOpenFic, onAddCopy, onDr
     <label className="text-sm">Reading status<select className={inp} value={w.status} onChange={e => update(w, { status: e.target.value as any })}>{STATUSES.map(s => <option key={s}>{s}</option>)}</select></label>
     <div role="group" aria-label="My rating" className="flex gap-1">{[1, 2, 3, 4, 5].map(n => <button key={n} aria-label={`${n} stars`} className="min-h-12 min-w-12 text-2xl" onClick={() => update(w, { personalRating: w.personalRating === n ? undefined : n })}>{(w.personalRating ?? 0) >= n ? '★' : '☆'}</button>)}</div>
     <label className="text-sm">Notes<textarea className={inp} rows={4} defaultValue={w.notes} onBlur={e => update(w, { notes: e.target.value })} /></label>
+    <button className={ghost + ' justify-self-start'} onClick={onEdit}>Edit metadata</button>
     <div className="flex gap-2"><button className={btn} onClick={() => update(w, { favourite: !w.favourite, favouritedAt: w.favourite ? undefined : Date.now() })}>{w.favourite ? 'Remove favourite' : 'Add favourite'}</button><button className={ghost} onClick={onRemove}>Remove from library</button></div>
   </div></div>
 }
@@ -231,9 +252,13 @@ function StorageCard({ works, onChange }: { works: Work[]; onChange: () => void 
 }
 
 function PdfHeaderToggle() {
-  const [on, setOn] = useState(pdfHeaderEnabled())
-  return <section className="grid gap-1"><h2 className="font-serif text-xl mt-4">PDF import</h2>
-    <label className="flex items-start gap-2 min-h-10"><input type="checkbox" className="mt-1" checked={on} onChange={e => { setOn(e.target.checked); setPdfHeaderEnabled(e.target.checked) }} />
+  const [hdr, setHdr] = useState(pdfHeaderEnabled()); const [store, setStore] = useState(autoStoreEnabled())
+  return <section className="grid gap-1"><h2 className="font-serif text-xl mt-4">Import options</h2>
+    <p className="text-dim text-sm">Imports save straight to your library using whatever metadata was found. Open a fic and tap Edit metadata to fix or add details.</p>
+    <label className="flex items-start gap-2 min-h-10"><input type="checkbox" className="mt-1" checked={hdr} onChange={e => { setHdr(e.target.checked); setPdfHeaderEnabled(e.target.checked) }} />
       <span>Read the labelled header on a PDF's first page (Fandom, Rating, Stats and similar lines)</span></label>
-    <p className="text-dim text-sm">Done on your device with no AI. Only the header lines are kept and the page text is discarded. Nothing after the Stats line and no other page is read. You can always correct the result before saving.</p></section>
+    <p className="text-dim text-sm">Done on your device with no AI. Only the header lines are kept and the page text is discarded. Nothing after the Stats line and no other page is read.</p>
+    <label className="flex items-start gap-2 min-h-10"><input type="checkbox" className="mt-1" checked={store} onChange={e => { setStore(e.target.checked); setAutoStoreEnabled(e.target.checked) }} />
+      <span>Store a copy of imported EPUB and PDF files inside FicShelf</span></label>
+    <p className="text-dim text-sm">Off by default. Lets you open files here, but uses browser storage that can be cleared. Files that don't fit are added as metadata only.</p></section>
 }

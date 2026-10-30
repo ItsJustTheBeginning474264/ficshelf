@@ -55,3 +55,5 @@ export async function removeAllCopies(d: FicDB) {
   await d.transaction('rw', d.files, d.works, async () => { await d.files.clear(); await d.works.toCollection().modify({ hasLocalCopy: false }) })
 }
 export async function copiesSize(d: FicDB) { let n = 0; await d.files.each(f => { n += f.size }); return n }
+export const autoStoreEnabled = () => { try { return localStorage.getItem('ficshelf.autoStore') === 'on' } catch { return false } }
+export const setAutoStoreEnabled = (on: boolean) => { try { localStorage.setItem('ficshelf.autoStore', on ? 'on' : 'off') } catch {} }

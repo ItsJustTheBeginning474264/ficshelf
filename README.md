@@ -15,10 +15,10 @@ A privacy-first personal fanfiction library for Android phones. Import files you
 
 | Area | What it does |
 |---|---|
-| Import | EPUB, PDF, HTML, TXT. Multiple files at once, hash-based duplicate detection, review and correct before saving, auto vs manual fields shown. |
+| Import | EPUB, PDF, HTML, TXT. Pick many files; each is saved straight to the library with whatever metadata was found. Duplicates are skipped by hash. Fix details later with **Edit metadata** on any fic (your edits are kept apart from the file's values, with a reset option). |
 | Metadata | EPUB OPF fields, PDF document info, HTML meta tags, AO3-style labelled headers, TXT `---` header. Originals are kept separate from your edits. |
 | PDF header (optional) | For PDFs, FicShelf can also read the labelled header on page 1 only (Rating, Fandom, Relationship, Character, Additional Tags, Language, Stats, source URL). Local, no AI, on by default, switchable in Settings. Page text is discarded and nothing after the Stats line or on other pages is read. |
-| Filters | Fandom, relationship, original tags (required or excluded), personal tags, word range, completion, reading status, rating, format. |
+| Filters | Typeable dropdowns that list values already in your library with counts: fandom, author, relationship, character, original tags (required or excluded), personal tags, excluded characters and relationships. Plus word range, completion, reading status, rating, format. |
 | Filter logic | Choices in one group match any; different groups must all match; required tags must all be present; excluded tags hide a fic if any is present. |
 | Saved filters | Name and save a combination; it persists after closing the app. |
 | Personal tags | Create, rename, delete, tag one or many fics. Deleting a tag never deletes a fic. |
@@ -54,7 +54,7 @@ The app shell and your library metadata work offline after the first load. The h
 
 ## Local copies
 
-Importing with "Store a copy" off keeps metadata only. With it on, the file is saved in the browser's IndexedDB.
+By default imports keep metadata only. Turn on "Store a copy of imported EPUB and PDF files" in Settings (or add a copy later from a fic's page) to save the file in the browser's IndexedDB.
 
 | Behaviour | Detail |
 |---|---|
@@ -98,7 +98,7 @@ Tables: `works`, `tags`, `filters`, `files` (schema v2). To change the schema, a
 - Android Chrome has no inline PDF viewer, so PDFs open in another app.
 - The reader is basic (no table of contents, font controls or search).
 - Hashing and verification load the whole file into memory, which can strain very large files on low-memory phones.
-- The filter panel has no controls yet for author, character, warning, chapter range or date added. The engine supports them.
+- The filter panel has no controls yet for warning, rating, chapter range or date added. The engine supports them.
 - The reader, share sheet and storage estimates are untested on real devices.
 - Backups never include stored files.
 
